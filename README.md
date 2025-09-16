@@ -56,9 +56,13 @@ This script automates the cleanup process and can reclaim **substantial disk spa
 
 ### Option 2: PowerShell Scheduled Job
 # Run once as Administrator to create the scheduled job
+
+# First command - create the trigger
 $trigger = New-JobTrigger -Weekly -WeeksInterval 4 -DaysOfWeek Sunday -At 3AM
+
+# Second command - register the scheduled job (user-agnostic)
 Register-ScheduledJob -Name "DockerMonthlyCleanup" -ScriptBlock {
-    & "C:\Scripts\docker_wsl_compact_vdisk.ps1"
+    & "$env:USERPROFILE\dev\docker_wsl_compact_vdisk\docker_wsl_compact_vdisk.ps1"
 } -Trigger $trigger
 
 ## What the Script Does
