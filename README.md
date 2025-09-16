@@ -151,13 +151,6 @@ The script automatically detects Docker's WSL disk in these locations:
 - **Error handling** - Comprehensive try/catch blocks
 - **Process verification** - Confirms each step before proceeding
 
-## Contributing
-
-Feel free to submit issues or improvements. This script has been tested on:
-- Windows 10/11 Pro and Home
-- Docker Desktop versions 4.12+
-- Various WSL2 configurations
-
 ## License
 
 This script is provided as-is for personal and commercial use. No warranty implied.
