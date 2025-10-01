@@ -48,7 +48,7 @@ function Stop-DockerDaemon {
         Start-Sleep -Seconds 5
         
         # Check if Docker daemon is stopped
-        $dockerTest = docker version 2>$null
+        docker version 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Log "Docker daemon stopped successfully via CLI"
             return $true
@@ -77,7 +77,7 @@ function Stop-DockerDaemon {
         Start-Sleep -Seconds 10
         
         # Verify Docker daemon is stopped
-        $dockerTest = docker version 2>$null
+        docker version 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) {
             Write-Log "Docker daemon stopped successfully via WSL termination"
             return $true
