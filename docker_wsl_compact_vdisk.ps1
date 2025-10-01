@@ -175,21 +175,33 @@ exit
         Write-Log "WARNING: Docker WSL disk not found at: $dockerDiskPath"
     }
 
-    # Restart Docker Desktop with proper settings for scheduled tasks
-    Write-Log "Starting Docker Desktop..."
+    # Restart Docker Desktop using CLI command
+    Write-Log "Starting Docker Desktop using CLI..."
 
-    # Start Docker Desktop using full path with proper arguments
-    $dockerPath = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
-    if (Test-Path $dockerPath) {
-        # Use PowerShell job to launch in background with proper context
-        Start-Job -ScriptBlock {
-            param($path)
-            & $path
-        } -ArgumentList $dockerPath | Out-Null
+    # Kill any lingering Docker processes first
+    $dockerProcesses = @("Docker Desktop", "com.docker.backend", "com.docker.service")
+    foreach ($proc in $dockerProcesses) {
+        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 3
 
-        Write-Log "Docker Desktop launch command issued"
-    } else {
-        Write-Log "WARNING: Docker Desktop not found at: $dockerPath"
+    # Try Docker CLI start command first (most reliable for scheduled tasks)
+    try {
+        Write-Log "Attempting: docker desktop start"
+        $startResult = docker desktop start 2>&1
+        Write-Log "Docker CLI start result: $startResult"
+    } catch {
+        Write-Log "Docker CLI start command failed or not available: $($_.Exception.Message)"
+
+        # Fallback: Launch Docker Desktop executable
+        Write-Log "Fallback: Launching Docker Desktop.exe"
+        $dockerPath = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+        if (Test-Path $dockerPath) {
+            Start-Process $dockerPath -ErrorAction SilentlyContinue
+            Write-Log "Docker Desktop.exe launch attempted"
+        } else {
+            Write-Log "ERROR: Docker Desktop not found at: $dockerPath"
+        }
     }
 
     # Wait for Docker to start (with longer timeout for scheduled tasks)
