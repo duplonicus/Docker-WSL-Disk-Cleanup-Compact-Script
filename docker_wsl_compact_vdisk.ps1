@@ -183,12 +183,32 @@ exit
         Write-Log "WARNING: Docker WSL disk not found at: $dockerDiskPath"
     }
 
-    # Restart Docker Desktop
+    # Restart Docker Desktop with proper settings for scheduled tasks
     Write-Log "Starting Docker Desktop..."
-    Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
-    
-    # Wait for Docker to start
-    Wait-ForDocker
+
+    # Kill any lingering Docker processes first
+    $dockerProcesses = @("Docker Desktop", "com.docker.backend", "com.docker.service")
+    foreach ($proc in $dockerProcesses) {
+        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    Start-Sleep -Seconds 3
+
+    # Start Docker Desktop using full path with proper arguments
+    $dockerPath = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
+    if (Test-Path $dockerPath) {
+        # Use PowerShell job to launch in background with proper context
+        Start-Job -ScriptBlock {
+            param($path)
+            & $path
+        } -ArgumentList $dockerPath | Out-Null
+
+        Write-Log "Docker Desktop launch command issued"
+    } else {
+        Write-Log "WARNING: Docker Desktop not found at: $dockerPath"
+    }
+
+    # Wait for Docker to start (with longer timeout for scheduled tasks)
+    Wait-ForDocker -TimeoutSeconds 180
 
     Write-Log "=== Docker Monthly Cleanup Completed Successfully ==="
 
