@@ -52,7 +52,10 @@ This script automates the cleanup process and can reclaim **substantial disk spa
 4. **Action**: Start a program
    - **Program**: powershell.exe
    - **Arguments**: -ExecutionPolicy Bypass -File "C:\Scripts\docker_wsl_compact_vdisk.ps1"
-5. **Settings**: Check "Run with highest privileges"
+5. **Settings**:
+   - ✅ **Check "Run with highest privileges"** (REQUIRED)
+   - ✅ **Check "Run whether user is logged on or not"**
+   - Configure for: Windows 10/11
 
 ### Option 2: PowerShell Scheduled Job
 # Run once as Administrator to create the scheduled job
@@ -84,9 +87,11 @@ Register-ScheduledJob -Name "DockerMonthlyCleanup" -ScriptBlock {
 - Uses Windows diskpart to compact the virtual disk
 - Reports actual disk space reclaimed
 
-### 4. **Restart Phase**  
-- Restarts Docker Desktop
-- Waits for Docker daemon to be ready
+### 4. **Restart Phase**
+- Kills any lingering Docker processes
+- Restarts Docker Desktop using `docker desktop start` CLI (preferred)
+- Falls back to launching Docker Desktop.exe if CLI unavailable
+- Waits for Docker daemon to be ready (up to 3 minutes)
 - Verifies successful startup
 
 ## Expected Results
@@ -122,13 +127,21 @@ Logs are stored at C:\Logs\DockerCleanup.log by default and include:
 
 ## Troubleshooting
 
-### Docker Won't Start After Script
-- **Solution**: Open Docker Desktop → Troubleshoot → Restart
-- **Prevention**: Script includes graceful shutdown to prevent this
+### Docker Won't Start After Scheduled Task Runs
+- **Cause**: Scheduled task not running with highest privileges
+- **Solution**: Edit scheduled task → Check "Run with highest privileges"
+- **Note**: The `docker desktop start` CLI command requires admin rights to work from scheduled tasks
+
+### Docker Desktop Won't Start (Manual Intervention Needed)
+- **Symptoms**: Script completes but Docker doesn't start automatically
+- **Manual fix**:
+  1. Open Task Manager → End all Docker processes
+  2. Launch Docker Desktop from Start menu
+- **Prevention**: Ensure scheduled task has "Run with highest privileges" checked
 
 ### "Access Denied" Errors
 - **Cause**: Script not running as Administrator
-- **Solution**: Always run PowerShell as Administrator
+- **Solution**: Always run PowerShell as Administrator or enable "Run with highest privileges" in Task Scheduler
 
 ### Script Can't Find Docker Disk
 - **Cause**: Non-standard Docker installation location
