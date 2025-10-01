@@ -130,8 +130,8 @@ try {
     docker system prune -a -f 2>&1 | ForEach-Object { Write-Log $_ }
     
     # Clean build cache specifically
-    Write-Log "Running: docker builder prune -a -f"
-    docker builder prune -a -f 2>&1 | ForEach-Object { Write-Log $_ }
+    Write-Log "Running: docker buildx prune -a -f"
+    docker buildx prune -a -f 2>&1 | ForEach-Object { Write-Log $_ }
     
     # Get post-cleanup usage
     $postCleanupUsage = docker system df --format "table {{.Type}}\t{{.TotalCount}}\t{{.Size}}" 2>$null
