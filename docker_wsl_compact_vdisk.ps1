@@ -60,11 +60,7 @@ function Stop-DockerDaemon {
     # Method 2: Stop specific Docker WSL distros
     try {
         Write-Log "Stopping Docker WSL distros..."
-        
-        # Check what Docker distros are running
-        $wslList = wsl -l -v 2>$null | Where-Object { $_ -match "docker" }
-        Write-Log "Docker WSL distros found: $wslList"
-        
+
         # Stop docker-desktop distro
         wsl -t docker-desktop 2>$null
         Write-Log "Terminated docker-desktop distro"
@@ -107,7 +103,7 @@ try {
     Write-Log "Starting Docker Desktop if not running..."
     $dockerProcess = Get-Process "Docker Desktop" -ErrorAction SilentlyContinue
     if (-not $dockerProcess) {
-        Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe" -ErrorAction SilentlyContinue
+        Start-Process "C:\Program Files\Docker\Docker\Docker Desktop.exe"
         Start-Sleep -Seconds 15
     }
 
@@ -124,15 +120,11 @@ try {
 
     # Docker cleanup commands
     Write-Log "Starting Docker cleanup..."
-    
+
     # Clean up unused containers, networks, images, and build cache
     Write-Log "Running: docker system prune -a -f"
     docker system prune -a -f 2>&1 | ForEach-Object { Write-Log $_ }
-    
-    # Clean build cache specifically
-    Write-Log "Running: docker buildx prune -a -f"
-    docker buildx prune -a -f 2>&1 | ForEach-Object { Write-Log $_ }
-    
+
     # Get post-cleanup usage
     $postCleanupUsage = docker system df --format "table {{.Type}}\t{{.TotalCount}}\t{{.Size}}" 2>$null
     Write-Log "Post-cleanup usage: $postCleanupUsage"
@@ -185,13 +177,6 @@ exit
 
     # Restart Docker Desktop with proper settings for scheduled tasks
     Write-Log "Starting Docker Desktop..."
-
-    # Kill any lingering Docker processes first
-    $dockerProcesses = @("Docker Desktop", "com.docker.backend", "com.docker.service")
-    foreach ($proc in $dockerProcesses) {
-        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Seconds 3
 
     # Start Docker Desktop using full path with proper arguments
     $dockerPath = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
