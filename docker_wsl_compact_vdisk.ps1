@@ -122,7 +122,7 @@ try {
     Write-Log "Starting Docker cleanup..."
 
     # Clean up unused containers, networks, images, and build cache
-    Write-Log "Running: docker system prune -a -f"
+    Write-Log "Running: docker system prune -f"
     docker system prune -f 2>&1 | ForEach-Object { Write-Log $_ }
 
     # Get post-cleanup usage
