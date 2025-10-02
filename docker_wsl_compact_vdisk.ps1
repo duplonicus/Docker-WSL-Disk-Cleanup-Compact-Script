@@ -123,7 +123,7 @@ try {
 
     # Clean up unused containers, networks, images, and build cache
     Write-Log "Running: docker system prune -a -f"
-    docker system prune -a -f 2>&1 | ForEach-Object { Write-Log $_ }
+    docker system prune -f 2>&1 | ForEach-Object { Write-Log $_ }
 
     # Get post-cleanup usage
     $postCleanupUsage = docker system df --format "table {{.Type}}\t{{.TotalCount}}\t{{.Size}}" 2>$null
