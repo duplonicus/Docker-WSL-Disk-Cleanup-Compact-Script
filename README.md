@@ -30,7 +30,7 @@ This script automates the cleanup process and can reclaim **substantial disk spa
 
 ## Installation
 
-1. **Download the script** to your preferred location (e.g., C:\Scripts\)
+1. **Download the script** to a folder on a Windows drive (e.g., C:\Scripts\), not inside a WSL distro
 2. **Create the log directory**: New-Item -ItemType Directory -Path "C:\Logs" -Force
 3. **Test the script** by running it manually first
 
@@ -76,14 +76,14 @@ $trigger = New-JobTrigger -Weekly -WeeksInterval 4 -DaysOfWeek Sunday -At 3AM
 
 # Second command - register the scheduled job (user-agnostic)
 Register-ScheduledJob -Name "DockerMonthlyCleanup" -ScriptBlock {
-    & "$env:USERPROFILE\dev\docker_wsl_compact_vdisk\docker_wsl_compact_vdisk.ps1"
+    & "C:\Scripts\docker_wsl_compact_vdisk.ps1"
 } -Trigger $trigger
 
 ## How it works
 
-Last checked against the code: 2026-10-09, commit bff277d.
+Last checked against the code: 2026-10-09, commit 5002231.
 
-One PowerShell file, `docker_wsl_compact_vdisk.ps1`, about 290 lines. It has no dependencies beyond what Windows and Docker Desktop already ship: the `docker` CLI, `wsl.exe` and `diskpart`.
+One PowerShell file, `docker_wsl_compact_vdisk.ps1`, about 330 lines. It has no dependencies beyond what Windows and Docker Desktop already ship: the `docker` CLI, `wsl.exe` and `diskpart`.
 
 One sentence for the design: **delete what Docker no longer needs, stop Docker and WSL cleanly so the disk files are not in use, shrink the files, then start Docker again.**
 
@@ -99,7 +99,9 @@ The compaction step is the reason the script exists. Deleting images or files fr
 | `Write-Warn` | Logs a `WARNING:` line and adds one to the warning count. |
 | `Wait-ForDocker` | Runs `docker version` every 5 seconds until the daemon answers with a version or the timeout passes (120 seconds by default). Returns true or false. |
 | `Stop-DockerDaemon` | Stops Docker with three methods in order, checking after each one. |
-| `Compact-Vhdx` | Compacts one `.vhdx` file with `diskpart` and logs its size before and after. |
+| `Stop-DockerProcesses` | Force-stops `Docker Desktop`, `com.docker.backend` and `com.docker.service` if they are running. |
+| `Wait-ForFileRelease` | Tries to open a file with no sharing every 5 seconds, for up to 60 seconds. Returns true once nothing else holds the file. |
+| `Compact-Vhdx` | Waits for one `.vhdx` file to be released, compacts it with `diskpart` and logs its size before and after. |
 | Main block | The run itself, inside one `try` / `catch` that logs the error and exits with code 1. |
 
 ### One run
@@ -120,9 +122,9 @@ flowchart TD
     m2 --> q2{Still answers?}
     q2 -- no --> wsl
     q2 -- yes --> m3["Method 3: force-kill the<br/>Docker Desktop process"]
-    m3 --> wsl["wsl --shutdown"]
-    wsl --> c1["Compact Docker's docker_data.vhdx"]
-    c1 --> c2["Compact the disk of each WSL distro<br/>that matches -DistroName"]
+    m3 --> wsl["Stop leftover Docker Desktop processes<br/>wsl --shutdown"]
+    wsl --> c1["Wait for docker_data.vhdx to be released<br/>Compact it"]
+    c1 --> c2["Same for the disk of each WSL distro<br/>that matches -DistroName"]
     c2 --> restart["Kill leftover Docker processes<br/>docker desktop start"]
     restart --> q3{Did it exit<br/>with code 0?}
     q3 -- no --> exe["Launch Docker Desktop.exe"]
@@ -141,23 +143,25 @@ The same run as steps:
 5. **Remove anonymous volumes.** The script lists dangling volumes. One whose name is 64 hex characters is an anonymous volume and is removed. Any other name is a volume somebody named, so it is logged as skipped and kept.
 6. **Record disk usage again.**
 7. **Stop Docker.** Three methods in order (table below).
-8. **Shut down WSL.** `wsl --shutdown`, then a 5 second wait. This stops every WSL distro on the machine, which is what frees their disks for compaction.
-9. **Compact Docker's disk.** `docker_data.vhdx` under `%LOCALAPPDATA%\Docker\wsl\disk`.
-10. **Compact the distro disks.** The script reads the registered WSL distros from the registry (`HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss`), keeps the ones whose name matches `-DistroName`, and compacts each one's `.vhdx`.
-11. **Start Docker again.** It force-kills `Docker Desktop`, `com.docker.backend` and `com.docker.service` if any are left and runs `docker desktop start`. If that command is missing or exits with an error, it launches `Docker Desktop.exe` directly.
-12. **Check Docker came back.** It polls for up to 180 seconds. If Docker is not ready, the script logs an error and exits with code 1.
-13. **Log the last line.** `Completed Successfully`, or `Completed with N warning(s)`.
+8. **Stop what is left of Docker Desktop.** Its background processes are force-stopped. Docker Desktop can sit in a "stopping" state with the disk file still open, and `diskpart` then fails with "being used by another process".
+9. **Shut down WSL.** `wsl --shutdown`, then a 5 second wait. This stops every WSL distro on the machine, which is what frees their disks for compaction.
+10. **Compact Docker's disk.** `docker_data.vhdx` under `%LOCALAPPDATA%\Docker\wsl\disk`.
+11. **Compact the distro disks.** The script reads the registered WSL distros from the registry (`HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss`), keeps the ones whose name matches `-DistroName`, and compacts each one's `.vhdx`.
+12. **Start Docker again.** It stops any Docker Desktop process that is still around and runs `docker desktop start`. If that command is missing or exits with an error, it launches `Docker Desktop.exe` directly.
+13. **Check Docker came back.** It polls for up to 180 seconds. If Docker is not ready, the script logs an error and exits with code 1.
+14. **Log the last line.** `Completed Successfully`, or `Completed with N warning(s)`.
 
 ### Compacting one disk
 
 `Compact-Vhdx` does the same thing for every disk:
 
 1. If the file is missing, log a warning and return.
-2. Log the file size.
-3. Write a five-line diskpart script to a temp file: `select vdisk`, `attach vdisk readonly`, `compact vdisk`, `detach vdisk`, `exit`.
-4. Run `diskpart /s` on it, log the output, delete the temp file.
-5. If diskpart exited with an error code, log a warning.
-6. Log the new file size and how much was reclaimed.
+2. Wait up to 60 seconds for the file to be released. If something still holds it, log a warning and try anyway.
+3. Log the file size.
+4. Write a five-line diskpart script to a temp file: `select vdisk`, `attach vdisk readonly`, `compact vdisk`, `detach vdisk`, `exit`.
+5. Run `diskpart /s` on it and delete the temp file. Each diskpart message becomes one log line. Progress percentages are printed to the console only, once per new value.
+6. If diskpart exited with an error code, log a warning.
+7. Log the new file size and how much was reclaimed.
 
 `diskpart` only compacts a disk that is detached or attached read-only, which is why the script attaches it read-only first.
 
@@ -192,6 +196,7 @@ Whatever happens here, the run carries on to `wsl --shutdown`.
 | `docker desktop stop` does not stop the daemon | Tries method 2, then method 3 |
 | A `.vhdx` file is not where it should be | Logs a warning, skips that disk |
 | No distro matches `-DistroName` | Logs a warning, skips distro compaction |
+| A `.vhdx` file is still in use after 60 seconds | Logs a warning, tries the compaction anyway |
 | `diskpart` exits with an error | Logs a warning, carries on to the next disk |
 | `docker desktop start` is missing or fails | Launches `Docker Desktop.exe` directly, or logs an error if that file is missing too |
 | Docker is not back after 180 seconds | Logs an error, exits 1 |
@@ -207,6 +212,7 @@ A warning does not stop the run, because Docker still has to be started again. T
 | Remove anonymous volumes only | Unused named volumes pile up until someone reads the log and removes them |
 | Pick anonymous volumes by name pattern instead of `docker volume prune` | A volume someone deliberately named with 64 hex characters would be treated as anonymous |
 | Stop the Docker daemon first, then shut down WSL | Up to about a minute of extra waits across the three methods |
+| Force-stop Docker Desktop's processes before compacting | Docker Desktop does not get to finish its own shutdown |
 | `wsl --shutdown` instead of stopping only Docker's distros | Everything running in WSL is stopped, and the script does not start it again |
 | Compact with `diskpart` and a generated script file | Needs Administrator, so the scheduled task needs "Run with highest privileges" |
 | Find distro disks through the current user's registry | The task has to run as the user who owns the WSL distros |
@@ -217,6 +223,7 @@ A warning does not stop the run, because Docker still has to be started again. T
 
 ### Known limits
 
+- **Keep the script on a Windows drive.** If the script file lives inside a WSL distro, reading it during the run can start that distro again while its disk is being compacted.
 - **Everything in WSL goes down during a run.** Open terminals, editors connected to WSL and anything else running in a distro are stopped. Schedule it for a time when that is fine.
 - **Compaction only returns space the disk has already released.** How much comes back depends on how much was deleted inside the disk since the last run.
 - **The warning checks rely on exit codes.** If `diskpart` or `docker` reports a problem in its text output but exits with code 0, no warning is counted. The output is still in the log.
@@ -243,7 +250,7 @@ Logs are stored at C:\Logs\DockerCleanup.log by default and include:
 - Docker disk usage before/after cleanup
 - Space reclaimed by each phase
 - Any errors or warnings
-- Complete diskpart output for troubleshooting
+- diskpart's messages, one per line, for troubleshooting
 
 ### Sample Log Output
 Shortened. A real log also has the prune output, the volume step and one size pair per distro disk.
