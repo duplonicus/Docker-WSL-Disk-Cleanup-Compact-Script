@@ -169,7 +169,9 @@ function Compact-Vhdx {
                 $lastPercent = $Matches[1]
                 Write-Host "    ${Label}: $line"
             }
-        } elseif ($line) {
+        } elseif ($line -and $line -notmatch '^(Microsoft DiskPart version|Copyright \(C\)|On computer:)') {
+            # diskpart's banner is skipped: it says nothing about the run and
+            # it puts the computer name into a log people paste into bug reports
             Write-Log "$Label diskpart: $line"
         }
     }
