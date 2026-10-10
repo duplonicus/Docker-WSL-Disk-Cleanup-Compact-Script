@@ -56,6 +56,10 @@ By default the script compacts the disk of every WSL distro whose name starts wi
 
 ## Automated Scheduling
 
+**The scheduled task must run a copy of the script that sits on a Windows drive** (`C:\Scripts` in the examples below). Do not point it at a path inside WSL: not `\\wsl.localhost\...`, not `\\wsl$\...`, and not a Windows folder that is a link into a WSL distro. The script shuts WSL down and compacts that distro's disk, so it cannot also be running from it.
+
+If you keep the repository inside WSL, copy the script out to `C:\Scripts` and copy it again whenever you update it.
+
 ### Option 1: Windows Task Scheduler (Recommended)
 1. Open **Task Scheduler** as Administrator
 2. **Create Basic Task** → Name: "Docker Monthly Cleanup"
@@ -77,7 +81,7 @@ $trigger = New-JobTrigger -Weekly -WeeksInterval 4 -DaysOfWeek Sunday -At 3AM
 # Second command - register the scheduled job (user-agnostic)
 Register-ScheduledJob -Name "DockerMonthlyCleanup" -ScriptBlock {
     & "C:\Scripts\docker_wsl_compact_vdisk.ps1"
-} -Trigger $trigger
+} -Trigger $trigger -ScheduledJobOption (New-ScheduledJobOption -RunElevated)
 
 ## How it works
 
@@ -281,6 +285,19 @@ Shortened. A real log also has the prune output, the volume step and one size pa
 ### "Access Denied" Errors
 - **Cause**: Script not running as Administrator
 - **Solution**: Always run PowerShell as Administrator or enable "Run with highest privileges" in Task Scheduler
+
+### You Moved Your Projects Into WSL After Setting This Up
+- **Cause**: The scheduled task still runs the script from its old folder, which now lives inside a WSL distro
+- **Check** what the scheduled job runs:
+
+Get-ScheduledJob -Name DockerMonthlyCleanup | Select-Object -ExpandProperty Command
+
+- **Solution**: Copy the script to a Windows folder and point the job at the copy:
+
+Copy-Item "\\wsl.localhost\<your distro>\<path to repo>\docker_wsl_compact_vdisk.ps1" C:\Scripts\
+Get-ScheduledJob -Name DockerMonthlyCleanup | Set-ScheduledJob -ScriptBlock { & "C:\Scripts\docker_wsl_compact_vdisk.ps1" }
+
+- For a Task Scheduler task (Option 1), edit the task's action and change the path in **Arguments**
 
 ### Script Can't Find Docker Disk
 - **Cause**: Non-standard Docker installation location
