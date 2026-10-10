@@ -85,7 +85,7 @@ Register-ScheduledJob -Name "DockerMonthlyCleanup" -ScriptBlock {
 
 ## How it works
 
-Last checked against the code: 2026-10-09, commit f37eb13.
+Last checked against the code: 2026-10-09, commit 4f1a93b.
 
 One PowerShell file, `docker_wsl_compact_vdisk.ps1`, about 330 lines. It has no dependencies beyond what Windows and Docker Desktop already ship: the `docker` CLI, `wsl.exe` and `diskpart`.
 
@@ -103,7 +103,7 @@ The compaction step is the reason the script exists. Deleting images or files fr
 | `Write-Warn` | Logs a `WARNING:` line and adds one to the warning count. |
 | `Wait-ForDocker` | Runs `docker version` every 5 seconds until the daemon answers with a version or the timeout passes (120 seconds by default). Returns true or false. |
 | `Stop-DockerDaemon` | Stops Docker with three methods in order, checking after each one. |
-| `Stop-DockerProcesses` | Force-stops `Docker Desktop`, `com.docker.backend` and `com.docker.service` if they are running. |
+| `Stop-DockerProcesses` | Force-stops `Docker Desktop`, `com.docker.backend`, `com.docker.build` and `com.docker.service` if they are running. |
 | `Wait-ForFileRelease` | Tries to open a file with no sharing every 5 seconds, for up to 60 seconds. Returns true once nothing else holds the file. |
 | `Compact-Vhdx` | Waits for one `.vhdx` file to be released, compacts it with `diskpart` and logs its size before and after. |
 | Main block | The run itself, inside one `try` / `catch` that logs the error and exits with code 1. |
@@ -130,9 +130,9 @@ flowchart TD
     wsl --> c1["Wait for docker_data.vhdx to be released<br/>Compact it"]
     c1 --> c2["Same for the disk of each WSL distro<br/>that matches -DistroName"]
     c2 --> restart["Kill leftover Docker processes<br/>docker desktop start"]
-    restart --> q3{Did it exit<br/>with code 0?}
+    restart --> q3{Daemon ready<br/>within 60 s?}
+    q3 -- yes --> done
     q3 -- no --> exe["Launch Docker Desktop.exe"]
-    q3 -- yes --> back
     exe --> back{Daemon ready<br/>within 180 s?}
     back -- no --> fail2([Log the error, exit 1])
     back -- yes --> done([Log completed, with the warning count if any])
@@ -151,8 +151,8 @@ The same run as steps:
 9. **Shut down WSL.** `wsl --shutdown`, then a 5 second wait. This stops every WSL distro on the machine, which is what frees their disks for compaction.
 10. **Compact Docker's disk.** `docker_data.vhdx` under `%LOCALAPPDATA%\Docker\wsl\disk`.
 11. **Compact the distro disks.** The script reads the registered WSL distros from the registry (`HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss`), keeps the ones whose name matches `-DistroName`, and compacts each one's `.vhdx`.
-12. **Start Docker again.** It stops any Docker Desktop process that is still around and runs `docker desktop start`. If that command is missing or exits with an error, it launches `Docker Desktop.exe` directly.
-13. **Check Docker came back.** It polls for up to 180 seconds. If Docker is not ready, the script logs an error and exits with code 1.
+12. **Start Docker again.** It stops any Docker Desktop process that is still around and runs `docker desktop start`.
+13. **Check Docker came back.** It polls the daemon for up to 60 seconds. If the daemon has not answered, it launches `Docker Desktop.exe` directly and polls for up to 180 seconds more. If Docker is still not ready, the script logs an error and exits with code 1. What `docker desktop start` printed is not trusted: it can say "Docker Desktop is already running" and exit with code 0 when nothing is running.
 14. **Log the last line.** `Completed Successfully`, or `Completed with N warning(s)`.
 
 ### Compacting one disk
@@ -202,8 +202,8 @@ Whatever happens here, the run carries on to `wsl --shutdown`.
 | No distro matches `-DistroName` | Logs a warning, skips distro compaction |
 | A `.vhdx` file is still in use after 60 seconds | Logs a warning, tries the compaction anyway |
 | `diskpart` exits with an error | Logs a warning, carries on to the next disk |
-| `docker desktop start` is missing or fails | Launches `Docker Desktop.exe` directly, or logs an error if that file is missing too |
-| Docker is not back after 180 seconds | Logs an error, exits 1 |
+| `docker desktop start` is missing, fails, or claims Docker is already running when it is not | The daemon does not answer within 60 seconds, so the script launches `Docker Desktop.exe` directly, or logs an error if that file is missing |
+| Docker is still not back 180 seconds after that | Logs an error, exits 1 |
 | A PowerShell error anywhere in the run | Logs the message and stack trace, exits 1 |
 
 A warning does not stop the run, because Docker still has to be started again. The last log line carries the warning count.
