@@ -13,7 +13,7 @@ This script automates the cleanup process and can reclaim **substantial disk spa
 
 ## Features
 
-- ✅ **Automated Docker cleanup** - Removes unused containers, images, networks, and build cache
+- ✅ **Automated Docker cleanup** - Removes stopped containers, dangling images, unused networks, and build cache
 - ✅ **WSL2 virtual disk compaction** - Shrinks Docker's virtual disk file to actual usage size  
 - ✅ **Graceful Docker daemon shutdown** - Prevents "WSL distro terminated abruptly" errors
 - ✅ **Comprehensive logging** - Detailed logs for monitoring and troubleshooting
@@ -68,31 +68,116 @@ Register-ScheduledJob -Name "DockerMonthlyCleanup" -ScriptBlock {
     & "$env:USERPROFILE\dev\docker_wsl_compact_vdisk\docker_wsl_compact_vdisk.ps1"
 } -Trigger $trigger
 
-## What the Script Does
+## How it works
 
-### 1. **Docker Cleanup Phase**
-- Removes all unused containers
-- Removes all unused images (including dangling images)
-- Removes all unused networks
-- Clears Docker build cache
-- Reports space reclaimed
+Last checked against the code: 2026-10-09, commit 52ede28.
 
-### 2. **Graceful Shutdown Phase**
-- Stops Docker daemon using docker desktop stop
-- Terminates Docker WSL distros if needed
-- Safely shuts down WSL subsystem
+One PowerShell file, `docker_wsl_compact_vdisk.ps1`, about 215 lines. It has no dependencies beyond what Windows and Docker Desktop already ship: the `docker` CLI, `wsl.exe` and `diskpart`.
 
-### 3. **Disk Compaction Phase**
-- Locates Docker's WSL virtual disk (docker_data.vhdx)
-- Uses Windows diskpart to compact the virtual disk
-- Reports actual disk space reclaimed
+One sentence for the design: **delete what Docker no longer needs, stop Docker and WSL cleanly so the disk file is not in use, shrink the file, then start Docker again.**
 
-### 4. **Restart Phase**
-- Kills any lingering Docker processes
-- Restarts Docker Desktop using `docker desktop start` CLI (preferred)
-- Falls back to launching Docker Desktop.exe if CLI unavailable
-- Waits for Docker daemon to be ready (up to 3 minutes)
-- Verifies successful startup
+The compaction step is the reason the script exists. Deleting images frees space inside Docker's virtual disk, but the `.vhdx` file on the Windows drive stays the same size until something compacts it.
+
+### The pieces
+
+| Piece | What it does |
+|---|---|
+| `-LogPath` parameter | Where the log goes. Default `C:\Logs\DockerCleanup.log`. The folder is created if it is missing. |
+| `Write-Log` | Puts a timestamp on a message, prints it and appends it to the log file. Every step goes through it. |
+| `Wait-ForDocker` | Runs `docker version` every 5 seconds until the daemon answers with a version or the timeout passes (120 seconds by default). |
+| `Stop-DockerDaemon` | Stops Docker with three methods in order, checking after each one. |
+| Main block | The run itself, inside one `try` / `catch` that logs the error and exits with code 1. |
+
+### One run
+
+```mermaid
+flowchart TD
+    start([Scheduled task or manual run]) --> admin{Running as<br/>Administrator?}
+    admin -- no --> fail([Log the error, exit 1])
+    admin -- yes --> up["Start Docker Desktop if its process is missing<br/>Wait up to 120 s for the daemon"]
+    up --> prune["docker system prune -f<br/>Log disk usage before and after"]
+    prune --> m1["Method 1: docker desktop stop --timeout 30"]
+    m1 --> q1{Does docker version<br/>still answer?}
+    q1 -- no --> wsl
+    q1 -- yes --> m2["Method 2: wsl -t docker-desktop<br/>wsl -t docker-desktop-data"]
+    m2 --> q2{Still answers?}
+    q2 -- no --> wsl
+    q2 -- yes --> m3["Method 3: force-kill the<br/>Docker Desktop process"]
+    m3 --> wsl["wsl --shutdown"]
+    wsl --> found{Does docker_data.vhdx<br/>exist?}
+    found -- yes --> compact["diskpart: select vdisk, compact vdisk<br/>Log file size before and after"]
+    found -- no --> warn[Log a warning]
+    compact --> restart
+    warn --> restart["Kill leftover Docker processes<br/>docker desktop start<br/>Wait up to 180 s for the daemon"]
+    restart --> done([Log completed])
+```
+
+The same run as steps:
+
+1. **Check for Administrator.** `diskpart` needs it. Without it the script logs an error and exits with code 1.
+2. **Make sure Docker is up.** If no `Docker Desktop` process exists, the script launches `Docker Desktop.exe` from `C:\Program Files\Docker\Docker` and waits 15 seconds. Then it polls for up to 120 seconds.
+3. **Record disk usage.** `docker system df` goes into the log.
+4. **Prune.** `docker system prune -f` removes stopped containers, networks no container uses, dangling images and unused build cache. Its output goes into the log line by line.
+5. **Record disk usage again.**
+6. **Stop Docker.** Three methods in order (table below).
+7. **Shut down WSL.** `wsl --shutdown`, then a 5 second wait. This stops every WSL distro on the machine.
+8. **Compact.** The script writes a three-line diskpart script (`select vdisk`, `compact vdisk`, `exit`) to a temp file, runs `diskpart /s` on it, deletes the temp file, and logs the `.vhdx` size before and after plus the difference.
+9. **Start Docker again.** It force-kills `Docker Desktop`, `com.docker.backend` and `com.docker.service` if any are left, runs `docker desktop start`, and polls for up to 180 seconds.
+10. **Log the completed line.**
+
+### Stopping Docker: three methods
+
+After methods 1 and 2 the script runs `docker version`. A non-zero exit code means the daemon is down and the later methods are skipped.
+
+| Order | Method | Wait before checking |
+|---|---|---|
+| 1 | `docker desktop stop --timeout 30` | 5 seconds |
+| 2 | `wsl -t docker-desktop` and `wsl -t docker-desktop-data` | 10 seconds |
+| 3 | Force-kill the `Docker Desktop` process | 10 seconds, no check |
+
+Whatever happens here, the run carries on to `wsl --shutdown`.
+
+### What it leaves alone
+
+| Left alone | Why it survives |
+|---|---|
+| Tagged images, even unused ones | The prune runs without `-a`, so only dangling images go. Commit 0a51e66 removed `-a` so that unused MCP server images are not deleted. |
+| Volumes | `docker system prune` does not touch volumes unless `--volumes` is passed, and the script does not pass it. |
+| Running containers and their images and networks | Prune only removes what is unused. |
+| The disks of other WSL distros | Only `docker_data.vhdx` is compacted. |
+
+### What happens when something fails
+
+| Situation | What the script does |
+|---|---|
+| Not Administrator | Logs `ERROR: Script must be run as Administrator`, exits 1 |
+| Docker never becomes ready at the start | Logs a warning and carries on (see Known limits) |
+| `docker desktop stop` does not stop the daemon | Tries method 2, then method 3 |
+| `docker_data.vhdx` is not at the expected path | Logs a warning, skips compaction, still restarts Docker |
+| The `docker` command is not found at restart | Launches `Docker Desktop.exe` directly, or logs an error if that file is missing too |
+| A PowerShell error anywhere in the run | Logs the message and stack trace, exits 1 |
+
+### Decisions and what they cost
+
+| Decision | Cost |
+|---|---|
+| Prune without `-a` | Unused tagged images keep their space until someone removes them by hand |
+| Volumes are never pruned | Orphaned volumes pile up over time |
+| Stop the Docker daemon first, then shut down WSL | Up to about a minute of extra waits across the three methods |
+| `wsl --shutdown` instead of stopping only Docker's distros | Anything running in another WSL distro is stopped, and the script does not start it again |
+| Compact with `diskpart` and a generated script file | Needs Administrator, so the scheduled task needs "Run with highest privileges" |
+| One fixed disk path under `%LOCALAPPDATA%\Docker\wsl\disk` | A Docker install that keeps its disk elsewhere gets a warning and no compaction |
+| Start Docker with `docker desktop start` | Depends on a Docker Desktop version that has the `docker desktop` commands |
+| Fixed waits (`Start-Sleep`) between steps | The run takes the same pauses on a fast machine as on a slow one |
+
+### Known limits
+
+- **The start-up check never fails the run.** `Write-Log` returns the text it logs, so `Wait-ForDocker` returns its log lines along with `$true` or `$false`. PowerShell treats that list as true. If Docker is not ready after 120 seconds the run continues anyway.
+- **A failed command does not stop the run.** `docker`, `wsl` and `diskpart` report failure through exit codes, and the `try` / `catch` only catches PowerShell errors. A failed prune or compaction shows up in the log output, and the last line still reads `Completed Successfully`.
+- **The final wait is not checked.** If Docker is not back after 180 seconds, the log has a warning followed by the completed line.
+- **The `Docker Desktop.exe` fallback at restart only runs when the `docker` command cannot be found.** A `docker desktop start` that runs and fails does not trigger it.
+- **Paths are fixed.** The Docker Desktop install folder and the disk location are written into the script.
+- **No dry run and no tests.** The only way to see what a run would do is to read the log of a real one.
 
 ## Expected Results
 
@@ -153,9 +238,8 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ## Technical Details
 
 ### Docker Disk Locations
-The script automatically detects Docker's WSL disk in these locations:
-- %LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx (primary)
-- %LOCALAPPDATA%\Docker\wsl\data\ext4.vhdx (fallback)
+The script looks for Docker's WSL disk in one place:
+- %LOCALAPPDATA%\Docker\wsl\disk\docker_data.vhdx
 
 ### Supported Docker Versions
 - Docker Desktop 4.0+ with WSL2 backend
@@ -166,7 +250,7 @@ The script automatically detects Docker's WSL disk in these locations:
 - **Docker readiness verification** - Ensures Docker is operational before cleanup
 - **Multiple shutdown methods** - Graceful → Forceful fallback
 - **Error handling** - Comprehensive try/catch blocks
-- **Process verification** - Confirms each step before proceeding
+- **Shutdown verification** - Checks that the daemon is down after each stop method
 
 ## License
 
