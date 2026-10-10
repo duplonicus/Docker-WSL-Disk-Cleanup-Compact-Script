@@ -6,7 +6,12 @@ param(
 )
 
 $DockerDesktopExe = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
+$DockerProcesses = @("Docker Desktop", "com.docker.backend", "com.docker.service")
 $script:Warnings = 0
+
+# Read docker's output as UTF-8 so its check marks are not garbled in the log.
+# There is no console to configure in some scheduled-task sessions; that is fine.
+try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch { }
 
 # Create log directory if it doesn't exist
 $logDir = Split-Path $LogPath -Parent
@@ -103,12 +108,40 @@ function Stop-DockerDaemon {
     return $false
 }
 
+function Stop-DockerProcesses {
+    foreach ($proc in $DockerProcesses) {
+        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Wait-ForFileRelease {
+    param([string]$Path, [int]$TimeoutSeconds = 60)
+
+    # A disk can stay locked for a while after WSL and Docker have stopped.
+    # Opening it with no sharing succeeds only once nothing else holds it.
+    $elapsed = 0
+    while ($true) {
+        try {
+            $stream = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+            $stream.Close()
+            return $true
+        } catch {
+            if ($elapsed -ge $TimeoutSeconds) { return $false }
+            Start-Sleep -Seconds 5
+            $elapsed += 5
+        }
+    }
+}
+
 function Compact-Vhdx {
     param([string]$Label, [string]$Path)
 
     if (-not (Test-Path $Path)) {
         Write-Warn "$Label VHDX not found at: $Path"
         return
+    }
+    if (-not (Wait-ForFileRelease -Path $Path)) {
+        Write-Warn "$Label VHDX is still in use by another process after 60 seconds; trying anyway"
     }
     Write-Log "Compacting $Label VHDX at: $Path"
     $initialSize = (Get-Item $Path).Length / 1GB
@@ -126,9 +159,21 @@ function Compact-Vhdx {
     )
     $scriptPath = "$env:TEMP\compact_$($Label -replace '\W','').txt"
     $diskpartScript | Out-File -FilePath $scriptPath -Encoding ASCII
-    $diskpartResult = diskpart /s $scriptPath 2>&1
+    # Log diskpart's messages one line each. Its progress lines repeat for
+    # minutes, so those go to the console only, once per new percentage.
+    $lastPercent = ""
+    diskpart /s $scriptPath 2>&1 | ForEach-Object {
+        $line = "$_".Trim()
+        if ($line -match '^(\d+) percent completed$') {
+            if ($Matches[1] -ne $lastPercent) {
+                $lastPercent = $Matches[1]
+                Write-Host "    ${Label}: $line"
+            }
+        } elseif ($line) {
+            Write-Log "$Label diskpart: $line"
+        }
+    }
     $diskpartExit = $LASTEXITCODE
-    Write-Log "$Label diskpart output: $diskpartResult"
     Remove-Item $scriptPath -ErrorAction SilentlyContinue
     if ($diskpartExit -ne 0) {
         Write-Warn "$Label diskpart exited with code $diskpartExit"
@@ -210,6 +255,12 @@ try {
         Write-Log "Docker daemon was not confirmed stopped; Docker Desktop process was force-stopped"
     }
 
+    # Docker Desktop's background processes can keep its disk file open after
+    # the daemon has stopped, which makes diskpart fail with "being used by
+    # another process". They are started again by the restart step below.
+    Write-Log "Stopping remaining Docker Desktop processes..."
+    Stop-DockerProcesses
+
     # Now safely shutdown WSL (Docker daemon should already be stopped)
     Write-Log "Now safely shutting down WSL..."
     wsl --shutdown 2>&1 | Out-Null
@@ -239,10 +290,7 @@ try {
     Write-Log "Starting Docker Desktop using CLI..."
 
     # Kill any lingering Docker processes first
-    $dockerProcesses = @("Docker Desktop", "com.docker.backend", "com.docker.service")
-    foreach ($proc in $dockerProcesses) {
-        Get-Process $proc -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    }
+    Stop-DockerProcesses
     Start-Sleep -Seconds 3
 
     # Try Docker CLI start command first (most reliable for scheduled tasks)
