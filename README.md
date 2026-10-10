@@ -85,7 +85,7 @@ Register-ScheduledJob -Name "DockerMonthlyCleanup" -ScriptBlock {
 
 ## How it works
 
-Last checked against the code: 2026-10-09, commit 5002231.
+Last checked against the code: 2026-10-09, commit f37eb13.
 
 One PowerShell file, `docker_wsl_compact_vdisk.ps1`, about 330 lines. It has no dependencies beyond what Windows and Docker Desktop already ship: the `docker` CLI, `wsl.exe` and `diskpart`.
 
@@ -163,7 +163,7 @@ The same run as steps:
 2. Wait up to 60 seconds for the file to be released. If something still holds it, log a warning and try anyway.
 3. Log the file size.
 4. Write a five-line diskpart script to a temp file: `select vdisk`, `attach vdisk readonly`, `compact vdisk`, `detach vdisk`, `exit`.
-5. Run `diskpart /s` on it and delete the temp file. Each diskpart message becomes one log line. Progress percentages are printed to the console only, once per new value.
+5. Run `diskpart /s` on it and delete the temp file. Each diskpart message becomes one log line, except its banner (version, copyright, computer name), which is skipped. Progress percentages are printed to the console only, once per new value.
 6. If diskpart exited with an error code, log a warning.
 7. Log the new file size and how much was reclaimed.
 
@@ -257,16 +257,31 @@ Logs are stored at C:\Logs\DockerCleanup.log by default and include:
 - diskpart's messages, one per line, for troubleshooting
 
 ### Sample Log Output
-Shortened. A real log also has the prune output, the volume step and one size pair per distro disk.
+From a real run on 2026-10-09, shortened. This run came shortly after another cleanup, so there was little left to reclaim. The indented percentage lines appear in the console only.
 
-2025-09-16 01:26:39 - === Starting Docker Monthly Cleanup ===
-2025-09-16 01:26:44 - Initial usage: Images: 8.069GB, Containers: 64.88MB, Volumes: 25.76GB
-2025-09-16 01:26:45 - Gracefully stopping Docker daemon...
-2025-09-16 01:27:11 - Docker daemon stopped successfully via CLI
-2025-09-16 01:27:17 - Docker initial size: 40.22 GB
-2025-09-16 01:27:45 - Docker final size: 40.22 GB  (reclaimed 0 GB)
-2025-09-16 01:27:52 - Docker is ready. Version: 27.4.0
-2025-09-16 01:27:52 - === Docker Monthly Cleanup Completed Successfully ===
+```
+2026-10-09 21:34:54 - === Starting Docker Monthly Cleanup ===
+2026-10-09 21:34:59 - Docker is ready. Version: 28.5.1
+2026-10-09 21:34:59 - Running: docker system prune -f  (dangling images + build cache, NO -a)
+2026-10-09 21:35:00 - Total reclaimed space: 0B
+2026-10-09 21:35:00 - Removed 0 anonymous volume(s).
+2026-10-09 21:35:00 - Attempting: docker desktop stop
+2026-10-09 21:35:46 - Docker daemon stopped successfully via CLI
+2026-10-09 21:35:46 - Stopping remaining Docker Desktop processes...
+2026-10-09 21:35:46 - Now safely shutting down WSL...
+2026-10-09 21:35:53 - Docker initial size: 44.9 GB
+2026-10-09 21:35:54 - Docker diskpart: DiskPart successfully attached the virtual disk file.
+    Docker: 19 percent completed
+    Docker: 100 percent completed
+2026-10-09 21:36:20 - Docker diskpart: DiskPart successfully compacted the virtual disk file.
+2026-10-09 21:36:22 - Docker final size: 44.9 GB  (reclaimed 0 GB)
+2026-10-09 21:36:22 - Ubuntu-24.04 initial size: 93.37 GB
+2026-10-09 21:37:22 - Ubuntu-24.04 diskpart: DiskPart successfully compacted the virtual disk file.
+2026-10-09 21:37:24 - Ubuntu-24.04 final size: 93 GB  (reclaimed 0.37 GB)
+2026-10-09 21:37:27 - Attempting: docker desktop start
+2026-10-09 21:38:06 - Docker is ready. Version: 28.5.1
+2026-10-09 21:38:06 - === Docker Monthly Cleanup Completed Successfully ===
+```
 
 ## Troubleshooting
 
