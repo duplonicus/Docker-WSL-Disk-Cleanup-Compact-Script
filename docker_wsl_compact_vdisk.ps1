@@ -6,7 +6,7 @@ param(
 )
 
 $DockerDesktopExe = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
-$DockerProcesses = @("Docker Desktop", "com.docker.backend", "com.docker.service")
+$DockerProcesses = @("Docker Desktop", "com.docker.backend", "com.docker.build", "com.docker.service")
 $script:Warnings = 0
 
 # Read docker's output as UTF-8 so its check marks are not garbled in the log.
@@ -296,18 +296,20 @@ try {
     Start-Sleep -Seconds 3
 
     # Try Docker CLI start command first (most reliable for scheduled tasks)
-    $started = $false
     try {
         Write-Log "Attempting: docker desktop start"
         $startResult = docker desktop start 2>&1
         Write-Log "Docker CLI start result: $startResult"
-        if ($LASTEXITCODE -eq 0) { $started = $true }
     } catch {
         Write-Log "Docker CLI start command failed or not available: $($_.Exception.Message)"
     }
 
+    # The CLI's answer is not trusted: it can report "Docker Desktop is already
+    # running" and exit 0 when nothing is running. Only the daemon answering counts.
+    $ready = Wait-ForDocker -TimeoutSeconds 60
+
     # Fallback: Launch Docker Desktop executable
-    if (-not $started) {
+    if (-not $ready) {
         Write-Log "Fallback: Launching Docker Desktop.exe"
         if (Test-Path $DockerDesktopExe) {
             Start-Process $DockerDesktopExe -ErrorAction SilentlyContinue
@@ -315,10 +317,11 @@ try {
         } else {
             Write-Log "ERROR: Docker Desktop not found at: $DockerDesktopExe"
         }
+        # Longer timeout for scheduled tasks
+        $ready = Wait-ForDocker -TimeoutSeconds 180
     }
 
-    # Wait for Docker to start (with longer timeout for scheduled tasks)
-    if (-not (Wait-ForDocker -TimeoutSeconds 180)) {
+    if (-not $ready) {
         Write-Log "ERROR: Docker did not come back after the cleanup. Start Docker Desktop by hand."
         exit 1
     }
