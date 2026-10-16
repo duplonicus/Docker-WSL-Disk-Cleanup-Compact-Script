@@ -133,6 +133,16 @@ function Wait-ForFileRelease {
     }
 }
 
+function Write-WslClients {
+    # Log every wsl.exe and the program that launched it, so a disk that stays locked names its culprit.
+    $clients = @(Get-CimInstance Win32_Process -Filter "Name='wsl.exe'" -ErrorAction SilentlyContinue)
+    if ($clients.Count -eq 0) { Write-Log "No wsl.exe clients running."; return }
+    foreach ($c in $clients) {
+        $parent = (Get-Process -Id $c.ParentProcessId -ErrorAction SilentlyContinue).ProcessName
+        Write-Warn "WSL was started again by '$parent' (pid $($c.ProcessId)): $($c.CommandLine)"
+    }
+}
+
 function Compact-Vhdx {
     param([string]$Label, [string]$Path)
 
@@ -141,7 +151,15 @@ function Compact-Vhdx {
         return
     }
     if (-not (Wait-ForFileRelease -Path $Path)) {
-        Write-Warn "$Label VHDX is still in use by another process after 60 seconds; trying anyway"
+        # Something restarted WSL after the shutdown. On 2026-10-16 it was VS Code's WSL remote
+        # reconnecting 5 s later, which left the distro disk uncompacted. Name the starter, shut
+        # WSL down again and give the disk one more chance.
+        Write-WslClients
+        Write-Log "Shutting WSL down again and retrying $Label..."
+        wsl --shutdown 2>&1 | Out-Null
+        if (-not (Wait-ForFileRelease -Path $Path -TimeoutSeconds 30)) {
+            Write-Warn "$Label VHDX is still in use after a second shutdown; close the app named above (usually VS Code) and run again. Trying anyway"
+        }
     }
     Write-Log "Compacting $Label VHDX at: $Path"
     $initialSize = (Get-Item $Path).Length / 1GB
@@ -264,6 +282,9 @@ try {
     Stop-DockerProcesses
 
     # Now safely shutdown WSL (Docker daemon should already be stopped)
+    if (Get-Process -Name Code -ErrorAction SilentlyContinue) {
+        Write-Warn "VS Code is open; its WSL remote reconnects within seconds of a shutdown and locks the distro disk. Close VS Code windows connected to WSL for a full compact."
+    }
     Write-Log "Now safely shutting down WSL..."
     wsl --shutdown 2>&1 | Out-Null
     Start-Sleep -Seconds 5
