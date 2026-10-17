@@ -4,8 +4,8 @@
     python3 dev-clean.py                 # report every project, write the candidate list, delete nothing
     python3 dev-clean.py --delete        # delete exactly the folders in the list file (edit it first)
 
-A project is a candidate when it has no state file (dev.claude/<name>/NOW.md, a sources.toml alias of it, or a
-NOW.md symlink in the repo) AND nothing uses it: no running process, systemd user unit, Claude Desktop or Claude
+A project is a candidate when it has no state file (a NOW.md in the repo root, real or a link; or, from before
+the 2026-10-16 split, dev.claude/<name>/NOW.md or a sources.toml alias of it) AND nothing uses it: no running process, systemd user unit, Claude Desktop or Claude
 Code MCP config, or ~/.claude skill/rule names its path. The list file holds one folder per line, relative to
 ~/dev; delete a line to keep that folder. Run the compact script afterwards so Windows gets the space back.
 """
@@ -49,7 +49,7 @@ def in_use() -> set[str]:
 
 def has_state(d: Path, aliases: dict, state_dirs: set[str]) -> bool:
     key = re.sub(r"[^a-z0-9]+", "-", d.name.lower()).strip("-")
-    return d.name.lower() in state_dirs or aliases.get(key, "") in state_dirs or (d / "NOW.md").is_symlink()
+    return d.name.lower() in state_dirs or aliases.get(key, "") in state_dirs or (d / "NOW.md").exists() or (d / "NOW.md").is_symlink()
 
 
 def junk_dirs(root: Path) -> list[tuple[Path, int]]:
@@ -67,7 +67,7 @@ def junk_dirs(root: Path) -> list[tuple[Path, int]]:
 
 def scan() -> None:
     aliases = tomllib.load(open(DEV / "surreal-state/config/sources.toml", "rb"))["projects"]["aliases"]
-    state_dirs = {p.name.lower() for p in DEV_CLAUDE.iterdir() if (p / "NOW.md").exists()}
+    state_dirs = {p.name.lower() for p in DEV_CLAUDE.iterdir() if (p / "NOW.md").exists()} if DEV_CLAUDE.is_dir() else set()
     used = in_use()
     candidates, total = [], 0
     print(f"{'project':32} {'state':6} {'in use':7} {'last commit':11} {'junk GB':>7}")
